@@ -287,4 +287,6 @@ No additional Python dependencies beyond ComfyUI and PyTorch.
 
 ## License
 
+MIT
+
 Add your preferred license here.
