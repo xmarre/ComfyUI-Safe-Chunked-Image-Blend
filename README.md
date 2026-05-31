@@ -283,7 +283,9 @@ If execution stops at a specific line, that line identifies the operation that f
 
 ## Requirements
 
-No additional Python dependencies beyond ComfyUI and PyTorch.
+- ComfyUI and PyTorch
+- NumPy
+- OpenCV (`cv2`) for CPU resize paths
 
 ## License
 
