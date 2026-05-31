@@ -1,7 +1,7 @@
 [project]
 name = "safe-chunked-image-blend"
 description = "A ComfyUI custom node for safely blending large IMAGE tensors in chunks with explicit resize and compute-device controls."
-version = "1.0.0"
+version = "1.0.1"
 license = {file = "LICENSE"}
 dependencies = [
     "numpy",
