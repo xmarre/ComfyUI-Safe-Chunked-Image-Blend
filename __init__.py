@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 try:
     import cv2
-except Exception:
+except ImportError:
     cv2 = None
 
 LARGE_CPU_RESIZE_PIXELS = 8_000_000
