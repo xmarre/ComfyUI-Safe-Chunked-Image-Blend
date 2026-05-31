@@ -1,8 +1,14 @@
 
 import gc
 import traceback
+import numpy as np
 import torch
 import torch.nn.functional as F
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 LARGE_CPU_RESIZE_PIXELS = 8_000_000
 
@@ -35,9 +41,43 @@ def _resolve_requested_device(compute_device, image1, image2):
         return image2.device
     raise RuntimeError(f"Unknown compute_device={compute_device!r}")
 
-def _resize_chunk_nhwc(chunk, target_h, target_w, method):
-    if chunk.shape[1] == target_h and chunk.shape[2] == target_w:
-        return chunk
+def _resize_chunk_nhwc_cpu_cv2(chunk, target_h, target_w, method):
+    if cv2 is None:
+        raise RuntimeError("CPU resize requires OpenCV/cv2, but cv2 could not be imported")
+
+    if chunk.device.type != "cpu":
+        raise RuntimeError(f"CPU OpenCV resize received non-CPU tensor: {chunk.device}")
+
+    if method == "nearest":
+        interpolation = cv2.INTER_NEAREST
+    elif method == "area":
+        interpolation = cv2.INTER_AREA
+    elif method == "bilinear":
+        interpolation = cv2.INTER_LINEAR
+    elif method == "bicubic":
+        interpolation = cv2.INTER_CUBIC
+    else:
+        raise RuntimeError(f"Unsupported resize_method={method!r}")
+
+    source = chunk.detach().contiguous().numpy()
+    batch, _h, _w, channels = source.shape
+    # ComfyUI IMAGE tensors are handled as float32 NHWC throughout this node.
+    resized = np.empty((batch, target_h, target_w, channels), dtype=np.float32)
+
+    for i in range(batch):
+        frame = source[i]
+        if frame.dtype != np.float32:
+            frame = frame.astype(np.float32, copy=False)
+        frame = np.ascontiguousarray(frame)
+        out = cv2.resize(frame, (target_w, target_h), interpolation=interpolation)
+        if channels == 1 and out.ndim == 2:
+            out = out[..., None]
+        resized[i] = out
+
+    return torch.from_numpy(resized)
+
+
+def _resize_chunk_nhwc_cuda_torch(chunk, target_h, target_w, method):
     x = chunk.movedim(-1, 1).contiguous()
     if method == "nearest":
         y = F.interpolate(x, size=(target_h, target_w), mode="nearest")
@@ -48,6 +88,14 @@ def _resize_chunk_nhwc(chunk, target_h, target_w, method):
     else:
         raise RuntimeError(f"Unsupported resize_method={method!r}")
     return y.movedim(1, -1).contiguous()
+
+
+def _resize_chunk_nhwc(chunk, target_h, target_w, method):
+    if chunk.shape[1] == target_h and chunk.shape[2] == target_w:
+        return chunk
+    if chunk.device.type == "cpu":
+        return _resize_chunk_nhwc_cpu_cv2(chunk, target_h, target_w, method)
+    return _resize_chunk_nhwc_cuda_torch(chunk, target_h, target_w, method)
 
 def _apply_blend(a, b, factor, blend_mode):
     if blend_mode == "normal":
@@ -131,13 +179,12 @@ class SafeChunkedImageBlend:
 
         resize_needed = resize_1_to is not None or resize_2_to is not None
         pixels_per_output_frame = int(out_h) * int(out_w)
-        if (resize_needed and requested_device.type == "cpu" and torch.cuda.is_available()
-                and pixels_per_output_frame >= LARGE_CPU_RESIZE_PIXELS):
-            device = torch.device("cuda:0")
-            if log_progress:
-                _log(f"overriding compute_device=cpu -> cuda:0 for large resize ({out_w}x{out_h}, {pixels_per_output_frame:,} px/frame)")
-        else:
-            device = requested_device
+        if resize_needed and requested_device.type == "cpu" and pixels_per_output_frame >= LARGE_CPU_RESIZE_PIXELS and log_progress:
+            _log(
+                f"keeping compute_device=cpu for large resize ({out_w}x{out_h}, "
+                f"{pixels_per_output_frame:,} px/frame); CPU resize uses OpenCV, not torch interpolate"
+            )
+        device = requested_device
 
         factor = float(blend_factor)
         chunk_size = int(chunk_size)
@@ -170,13 +217,13 @@ class SafeChunkedImageBlend:
                         _log(f"chunk {start}:{end} copied: a={_shape(a)} {a.device}, b={_shape(b)} {b.device}")
                     if resize_1_to is not None:
                         if log_progress:
-                            _log(f"chunk {start}:{end} resizing image1 {_shape(a)} -> {resize_1_to}")
+                            _log(f"chunk {start}:{end} resizing image1 {_shape(a)} -> {resize_1_to} via {'OpenCV CPU' if a.device.type == 'cpu' else 'torch'}")
                         a = _resize_chunk_nhwc(a, resize_1_to[0], resize_1_to[1], resize_method)
                         if log_progress:
                             _log(f"chunk {start}:{end} resized image1 -> {_shape(a)}")
                     if resize_2_to is not None:
                         if log_progress:
-                            _log(f"chunk {start}:{end} resizing image2 {_shape(b)} -> {resize_2_to}")
+                            _log(f"chunk {start}:{end} resizing image2 {_shape(b)} -> {resize_2_to} via {'OpenCV CPU' if b.device.type == 'cpu' else 'torch'}")
                         b = _resize_chunk_nhwc(b, resize_2_to[0], resize_2_to[1], resize_method)
                         if log_progress:
                             _log(f"chunk {start}:{end} resized image2 -> {_shape(b)}")
