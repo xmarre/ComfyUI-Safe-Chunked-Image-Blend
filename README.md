@@ -143,18 +143,12 @@ Uses `image1.device`.
 
 Uses `image2.device`.
 
-## Large CPU resize override
+## Large CPU resize behavior
 
-If a workflow still has `compute_device=cpu` but the node detects a large resize path and CUDA is available, it will override the effective compute device to CUDA.
+When `compute_device=cpu`, the node stays on CPU.
+If a resize is needed, CPU chunks are resized with OpenCV (`cv2`).
 
-The log will show both values:
-
-```text
-requested_compute_device=cpu
-effective_compute_device=cuda:0
-```
-
-This is intended to avoid accidentally running very large CPU resize operations when the workflow was meant to use CUDA.
+For very large workloads, prefer `compute_device=cuda` when available.
 
 ## Recommended settings for large upscaled image/video workflows
 
